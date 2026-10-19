@@ -40,4 +40,6 @@ jobs:
             TEST_NGINX_WORKER_USER='root wheel' \
               TEST_NGINX_NO_SHUFFLE=1 \
             TEST_NGINX_BINARY="$HOME/nginx/sbin/nginx" prove -r t/
-            ci/hostile.sh "$HOME/nginx/sbin/nginx"
+            # the address families are worth asking here as well: a dual
+            # stack listener hands over a different sockaddr on this system
+            ci/addresses.sh "$HOME/nginx/sbin/nginx"
