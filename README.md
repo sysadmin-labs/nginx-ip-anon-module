@@ -26,20 +26,16 @@
 [lint-badge]: https://github.com/sysadmin-labs/nginx-ip-anon-module/actions/workflows/lint.yml/badge.svg
 [lint-link]: https://github.com/sysadmin-labs/nginx-ip-anon-module/actions/workflows/lint.yml
 
-Two variables that carry the client address with its host part cut off, so
-a log can be kept without keeping the address that identifies the client.
-
-nginx has nothing for this.  `$remote_addr` is the whole address, and the
-usual workarounds -- a `map` with a regular expression, or a log format that
-drops the address altogether -- either break on IPv6 or throw away more than
-the question asks for.
+Masks the host part of the client address and provides it as
+`$remote_addr_anon` and `$binary_remote_addr_anon`, for access logs and
+limit keys that should not carry the address identifying the client.
 
 ## Synopsis
 
 ```nginx
 http {
-    ip_anon_v4_prefix 24;        # the default: the last octet goes
-    ip_anon_v6_prefix 48;        # the default: the routing prefix stays
+    ip_anon_v4_prefix 24;
+    ip_anon_v6_prefix 48;
 
     log_format anonymised '$remote_addr_anon - - [$time_local] "$request" '
                           '$status $body_bytes_sent';
@@ -59,16 +55,15 @@ http {
 
 ### `$remote_addr_anon`
 
-The client address with everything below the prefix set to zero, written
-the way nginx writes `$remote_addr`.  On a unix socket the variable is not
-found, which is what `$remote_addr` does there as well.
+The client address with all bits below the prefix cleared, formatted the way
+nginx formats `$remote_addr`.  Not found on a unix socket, where
+`$remote_addr` is not found either.
 
 ### `$binary_remote_addr_anon`
 
-The same address in its binary form, four bytes for IPv4 and sixteen for
-IPv6 -- the shape `limit_req_zone` and `limit_conn_zone` want for a key.
-Rate limiting on an anonymised address still groups the clients of one
-network together, which is usually what such a limit is for.
+The same address in binary form, four bytes for IPv4 and sixteen for IPv6,
+which is the form `limit_req_zone` and `limit_conn_zone` expect for a key.
+A limit on the masked address groups a network's clients together.
 
 ## Directives
 
@@ -78,8 +73,8 @@ network together, which is usually what such a limit is for.
 **default:** `24`
 **context:** `http`, `server`, `location`
 
-How many bits of an IPv4 address are kept.  `24` keeps the network and
-drops the host, `0` drops the address entirely, `32` keeps it whole.
+Number of IPv4 address bits kept.  24 keeps the network and drops the host,
+0 drops the address, 32 keeps it unchanged.
 
 ### `ip_anon_v6_prefix`
 
@@ -87,31 +82,30 @@ drops the host, `0` drops the address entirely, `32` keeps it whole.
 **default:** `48`
 **context:** `http`, `server`, `location`
 
-How many bits of an IPv6 address are kept.  An address that carries an IPv4
-address inside it -- `::ffff:192.0.2.1`, which is what a dual stack listener
-hands to the module -- is masked with the **IPv4** prefix instead, because
-the v6 prefix would cut into the `::ffff:` part and leave the four bytes
-that name the client untouched.
+Number of IPv6 address bits kept.  An IPv4-mapped address such as
+`::ffff:192.0.2.1`, which is what a dual stack listener passes to the
+module, is masked with the IPv4 prefix instead: the IPv6 prefix would cut
+into the `::ffff:` part and leave the four bytes identifying the client
+untouched.
 
-A value wider than the address family is refused at configuration time
-rather than quietly clamped.
+A prefix wider than its address family is rejected at configuration time,
+not clamped.
 
-## Building
+## Installation
 
 ```sh
 ./configure --add-module=/path/to/nginx-ip-anon-module
 ```
 
-or, as a loadable module,
+or as a loadable module
 
 ```sh
 ./configure --add-dynamic-module=/path/to/nginx-ip-anon-module
 ```
 
-and then `load_module modules/ngx_http_ip_anon_module.so;` in the main
-context.
+with `load_module modules/ngx_http_ip_anon_module.so;` in the main context.
 
-## Testing
+## Tests
 
 ```sh
 ci/build.sh 1.30.5 /tmp/nginx-test
@@ -120,6 +114,9 @@ ci/addresses.sh /tmp/nginx-test/sbin/nginx
 ci/reload.sh /tmp/nginx-test/sbin/nginx
 ```
 
+`t/` covers the configuration and the variables over IPv4; `ci/addresses.sh`
+drives the IPv6 and dual stack paths, which Test::Nginx does not reach.
+
 ## License
 
-BSD 2-Clause.  See [LICENSE](LICENSE).
+BSD 2-Clause, see [LICENSE](LICENSE).

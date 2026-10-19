@@ -39,10 +39,8 @@ static ngx_int_t ngx_http_ip_anon_binary_variable(ngx_http_request_t *r,
 
 
 /*
- * A prefix of zero is allowed -- it drops the address entirely, which is a
- * legitimate setting -- but a value wider than the address family is
- * refused rather than silently clamped: a configuration that says 64 for
- * IPv4 means something its author did not check.
+ * A prefix of 0 is valid and drops the address.  A prefix wider than the
+ * address family is rejected, not clamped.
  */
 static ngx_conf_num_bounds_t  ngx_http_ip_anon_v4_bounds = {
     ngx_conf_check_num_bounds, 0, 32
@@ -117,10 +115,9 @@ static ngx_http_variable_t  ngx_http_ip_anon_variables[] = {
 
 
 /*
- * Zero every bit below the prefix.  The loop walks whole bytes first and
- * then the one byte the prefix ends inside; a prefix that is a multiple of
- * eight never reaches the shift, which matters because a shift by eight of
- * an eight bit value is undefined, not zero.
+ * Clear all bits below the prefix: whole bytes first, then the byte the
+ * prefix ends in.  A prefix that is a multiple of eight never reaches the
+ * shift, which is deliberate: shifting a u_char by eight is undefined.
  */
 static void
 ngx_http_ip_anon_mask(u_char *addr, size_t len, ngx_uint_t prefix)
@@ -141,10 +138,9 @@ ngx_http_ip_anon_mask(u_char *addr, size_t len, ngx_uint_t prefix)
 
 
 /*
- * Copy the client address, mask it, and hand back the copy.  Working on a
- * copy is the whole point: r->connection->sockaddr is the live address of
- * the connection, and nginx reads it again for its own variables and for
- * the error log.
+ * Mask a copy of the client address.  r->connection->sockaddr is the live
+ * address of the connection and nginx reads it again for its own variables
+ * and for the error log, so it has to stay untouched.
  */
 static ngx_int_t
 ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, u_char *buf, size_t size)
@@ -175,10 +171,9 @@ ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, u_char *buf, size_t size)
         sin6 = (struct sockaddr_in6 *) buf;
 
         /*
-         * An address that carries an IPv4 one inside it is masked as the
-         * IPv4 address it is -- the v6 prefix would otherwise cut into the
-         * ::ffff: part and leave the four bytes that actually identify the
-         * client untouched.
+         * An IPv4-mapped address is masked with the v4 prefix.  The v6
+         * prefix would cut into the ::ffff: part and leave the four bytes
+         * identifying the client untouched.
          */
         if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
             ngx_http_ip_anon_mask(sin6->sin6_addr.s6_addr + 12, 4,
@@ -193,7 +188,7 @@ ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, u_char *buf, size_t size)
 #endif
 
     default:
-        /* unix sockets and anything else: nothing to anonymise */
+        /* unix sockets and anything else: nothing to mask */
         return NGX_DECLINED;
     }
 }
@@ -218,9 +213,8 @@ ngx_http_ip_anon_text_variable(ngx_http_request_t *r,
     }
 
     /*
-     * ngx_sock_ntop() is what nginx uses for $remote_addr itself, so the
-     * anonymised value is written the same way the unmasked one would be,
-     * brackets, scope id and all.
+     * ngx_sock_ntop() is what $remote_addr itself uses, so the masked value
+     * is formatted the same way, brackets and scope id included.
      */
     len = ngx_sock_ntop((struct sockaddr *) sa, r->connection->socklen,
                         text, NGX_SOCKADDR_STRLEN, 0);
@@ -331,12 +325,7 @@ ngx_http_ip_anon_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_ip_anon_conf_t  *prev = parent;
     ngx_http_ip_anon_conf_t  *conf = child;
 
-    /*
-     * 24 and 48 are what the German data protection authorities ask for
-     * when they ask for shortened addresses, and what the common analytics
-     * tools do: the last octet of an IPv4 address goes, and an IPv6
-     * address is cut back to the routing prefix.
-     */
+    /* the widths data protection authorities and analytics tools use */
     ngx_conf_merge_uint_value(conf->v4_prefix, prev->v4_prefix, 24);
     ngx_conf_merge_uint_value(conf->v6_prefix, prev->v6_prefix, 48);
 
