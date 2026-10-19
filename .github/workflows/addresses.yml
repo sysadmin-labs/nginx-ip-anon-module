@@ -1,0 +1,39 @@
+name: Addresses
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Monday morning, so a new nginx release that breaks the module shows
+    # up here and not in somebody's build
+    - cron: '59 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  addresses:
+    name: every address family
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The suite in t/ only ever sees 127.0.0.1.  Here the module is asked
+    # for an IPv6 address and for an IPv4 address arriving on a dual stack
+    # listener, which is the case where masking with the wrong prefix would
+    # leave the client's own four bytes in the log.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+        with:
+          test-nginx: 'false'
+
+      - name: Build nginx
+        run: |
+          . .github/versions.env
+          ci/build.sh "$NGINX_VERSION" "$HOME/nginx"
+
+      - name: IPv4, IPv6 and an IPv4 address in an IPv6 sockaddr
+        run: ci/addresses.sh "$HOME/nginx/sbin/nginx"
