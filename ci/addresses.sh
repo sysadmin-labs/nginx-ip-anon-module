@@ -105,10 +105,10 @@ echo "== IPv4 in an IPv6 sockaddr, dual stack listener"
 raw=$(probe "http://127.0.0.1:$DUAL/raw")
 anon=$(probe "http://127.0.0.1:$DUAL/anon")
 echo "  $raw -> $anon"
-case $anon in
-*127.0.0.0) ;;
-*) note "a mapped IPv4 address came back as $anon, the last octet must be zero" ;;
-esac
+# exactly what nginx writes for a masked v4-mapped address, not just
+# something ending in it
+[ "$anon" = "::ffff:127.0.0.0" ] ||
+	note "a mapped IPv4 address came back as $anon, expected ::ffff:127.0.0.0"
 
 echo "== IPv6"
 if curl -s --max-time 5 -o /dev/null "http://[::1]:$DUAL/anon" 2>/dev/null; then

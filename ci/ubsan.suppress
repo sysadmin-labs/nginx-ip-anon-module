@@ -14,3 +14,11 @@
 # produce them at all.  The entry therefore comes out again as soon as the
 # shipped stable line no longer carries it.
 nonnull-attribute:ngx_pstrdup
+
+# nginx reads its own md5 input four bytes at a time from a buffer it only
+# aligns to one (ngx_md5_body, src/core/ngx_md5.c:194), which the proxy path
+# in ci/addresses.sh walks through.  nginx's code, nginx's buffer, and
+# harmless on the architectures this is built for; the module appears in
+# none of those reports.
+alignment:ngx_md5_body
+alignment:src/core/ngx_md5.c

@@ -30,6 +30,10 @@ Masks the host part of the client address and provides it as
 `$remote_addr_anon` and `$binary_remote_addr_anon`, for access logs and
 limit keys that should not carry the address identifying the client.
 
+What is masked is the address of the connection, so behind a proxy it is the
+proxy unless `ngx_http_realip_module` has replaced it; with `set_real_ip_from`
+and `real_ip_header` in place it is the client.
+
 ## Synopsis
 
 ```nginx
@@ -95,7 +99,7 @@ untouched.
 A prefix wider than its address family is rejected at configuration time,
 not clamped.
 
-## Installation
+## Building
 
 ```sh
 ./configure --add-module=/path/to/nginx-ip-anon-module
@@ -109,7 +113,7 @@ or as a loadable module
 
 with `load_module modules/ngx_http_ip_anon_module.so;` in the main context.
 
-## Tests
+## Testing
 
 ```sh
 ci/build.sh 1.30.5 /tmp/nginx-test

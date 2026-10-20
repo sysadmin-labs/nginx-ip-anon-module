@@ -57,6 +57,7 @@ jobs:
           # walks the module at run time, which is what the sanitizers are
           # here for.
           ASAN_OPTIONS="$ASAN_OPTIONS:abort_on_error=0" \
+            ADDRESSES_REQUIRE_IPV6=1 \
             ci/addresses.sh "$HOME/nginx/sbin/nginx" 2>&1 | tee -a sanitizer.log
 
       - name: No findings allowed

@@ -161,6 +161,12 @@ ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, ngx_sockaddr_t *sa)
 
     acf = ngx_http_get_module_loc_conf(r, ngx_http_ip_anon_module);
 
+    /*
+     * The copy is as long as the address, the union is longer: zero it, or
+     * what is masked and formatted beyond socklen is whatever was on the
+     * stack.
+     */
+    ngx_memzero(sa, sizeof(ngx_sockaddr_t));
     ngx_memcpy(sa, r->connection->sockaddr, r->connection->socklen);
 
     switch (sa->sockaddr.sa_family) {
