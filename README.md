@@ -56,14 +56,18 @@ http {
 ### `$remote_addr_anon`
 
 The client address with all bits below the prefix cleared, formatted the way
-nginx formats `$remote_addr`.  Not found on a unix socket, where
-`$remote_addr` is not found either.
+nginx formats `$remote_addr`.  On a connection that carries no IP address, a
+unix socket for instance, it reports what `$remote_addr` reports there,
+`unix:`.
 
 ### `$binary_remote_addr_anon`
 
 The same address in binary form, four bytes for IPv4 and sixteen for IPv6,
 which is the form `limit_req_zone` and `limit_conn_zone` expect for a key.
-A limit on the masked address groups a network's clients together.
+A limit on the masked address groups a network's clients together.  Here too
+a connection without an IP address falls back to what
+`$binary_remote_addr` reports: a key that came out empty would silently
+take those connections out of every limit.
 
 ## Directives
 

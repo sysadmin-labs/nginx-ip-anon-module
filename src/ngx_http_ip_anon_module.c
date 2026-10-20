@@ -140,10 +140,12 @@ ngx_http_ip_anon_mask(u_char *addr, size_t len, ngx_uint_t prefix)
 /*
  * Mask a copy of the client address.  r->connection->sockaddr is the live
  * address of the connection and nginx reads it again for its own variables
- * and for the error log, so it has to stay untouched.
+ * and for the error log, so it has to stay untouched.  The copy goes into
+ * ngx_sockaddr_t, the union nginx uses for this, and not into a byte array:
+ * a sockaddr_in6 read out of a buffer with one byte alignment is undefined.
  */
 static ngx_int_t
-ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, u_char *buf, size_t size)
+ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, ngx_sockaddr_t *sa)
 {
     ngx_http_ip_anon_conf_t  *acf;
     struct sockaddr_in       *sin;
@@ -151,24 +153,26 @@ ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, u_char *buf, size_t size)
     struct sockaddr_in6      *sin6;
 #endif
 
-    if (r->connection->socklen == 0 || r->connection->socklen > size) {
+    if (r->connection->socklen == 0
+        || r->connection->socklen > sizeof(ngx_sockaddr_t))
+    {
         return NGX_DECLINED;
     }
 
     acf = ngx_http_get_module_loc_conf(r, ngx_http_ip_anon_module);
 
-    ngx_memcpy(buf, r->connection->sockaddr, r->connection->socklen);
+    ngx_memcpy(sa, r->connection->sockaddr, r->connection->socklen);
 
-    switch (((struct sockaddr *) buf)->sa_family) {
+    switch (sa->sockaddr.sa_family) {
 
     case AF_INET:
-        sin = (struct sockaddr_in *) buf;
+        sin = &sa->sockaddr_in;
         ngx_http_ip_anon_mask((u_char *) &sin->sin_addr, 4, acf->v4_prefix);
         return NGX_OK;
 
 #if (NGX_HAVE_INET6)
     case AF_INET6:
-        sin6 = (struct sockaddr_in6 *) buf;
+        sin6 = &sa->sockaddr_in6;
 
         /*
          * An IPv4-mapped address is masked with the v4 prefix.  The v6
@@ -188,9 +192,30 @@ ngx_http_ip_anon_sockaddr(ngx_http_request_t *r, u_char *buf, size_t size)
 #endif
 
     default:
-        /* unix sockets and anything else: nothing to mask */
+        /* unix sockets and anything else: there is no host part to mask */
         return NGX_DECLINED;
     }
+}
+
+
+/*
+ * A family without an address to mask falls back to connection->addr_text,
+ * which is what $remote_addr and $binary_remote_addr hand out there ("unix:"
+ * on a unix socket).  A variable without a value is an empty key, and
+ * limit_req and limit_conn skip an empty key: the limit would quietly stop
+ * applying to those connections.
+ */
+static ngx_int_t
+ngx_http_ip_anon_addr_text(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v)
+{
+    v->len = r->connection->addr_text.len;
+    v->data = r->connection->addr_text.data;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    return NGX_OK;
 }
 
 
@@ -198,13 +223,12 @@ static ngx_int_t
 ngx_http_ip_anon_text_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
-    u_char      sa[NGX_SOCKADDRLEN];
-    u_char     *text;
-    size_t      len;
+    u_char         *text;
+    size_t          len;
+    ngx_sockaddr_t  sa;
 
-    if (ngx_http_ip_anon_sockaddr(r, sa, sizeof(sa)) != NGX_OK) {
-        v->not_found = 1;
-        return NGX_OK;
+    if (ngx_http_ip_anon_sockaddr(r, &sa) != NGX_OK) {
+        return ngx_http_ip_anon_addr_text(r, v);
     }
 
     text = ngx_pnalloc(r->pool, NGX_SOCKADDR_STRLEN);
@@ -214,9 +238,9 @@ ngx_http_ip_anon_text_variable(ngx_http_request_t *r,
 
     /*
      * ngx_sock_ntop() is what $remote_addr itself uses, so the masked value
-     * is formatted the same way, brackets and scope id included.
+     * is written exactly as the unmasked one would be.
      */
-    len = ngx_sock_ntop((struct sockaddr *) sa, r->connection->socklen,
+    len = ngx_sock_ntop(&sa.sockaddr, r->connection->socklen,
                         text, NGX_SOCKADDR_STRLEN, 0);
 
     v->len = len;
@@ -233,38 +257,36 @@ static ngx_int_t
 ngx_http_ip_anon_binary_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
-    u_char                sa[NGX_SOCKADDRLEN];
     u_char               *addr;
     size_t                len;
+    ngx_sockaddr_t        sa;
     struct sockaddr_in   *sin;
 #if (NGX_HAVE_INET6)
     struct sockaddr_in6  *sin6;
 #endif
 
-    if (ngx_http_ip_anon_sockaddr(r, sa, sizeof(sa)) != NGX_OK) {
-        v->not_found = 1;
-        return NGX_OK;
+    if (ngx_http_ip_anon_sockaddr(r, &sa) != NGX_OK) {
+        return ngx_http_ip_anon_addr_text(r, v);
     }
 
-    switch (((struct sockaddr *) sa)->sa_family) {
+    switch (sa.sockaddr.sa_family) {
 
     case AF_INET:
-        sin = (struct sockaddr_in *) sa;
+        sin = &sa.sockaddr_in;
         addr = (u_char *) &sin->sin_addr;
         len = 4;
         break;
 
 #if (NGX_HAVE_INET6)
     case AF_INET6:
-        sin6 = (struct sockaddr_in6 *) sa;
+        sin6 = &sa.sockaddr_in6;
         addr = sin6->sin6_addr.s6_addr;
         len = 16;
         break;
 #endif
 
     default:
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_ip_anon_addr_text(r, v);
     }
 
     v->data = ngx_pnalloc(r->pool, len);

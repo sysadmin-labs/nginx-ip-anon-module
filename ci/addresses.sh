@@ -9,7 +9,8 @@
 # usage: ci/addresses.sh <nginx binary>
 #
 # Set ADDRESSES_LOAD_MODULE to the path of ngx_http_ip_anon_module.so to
-# test a loadable build.
+# test a loadable build, ADDRESSES_REQUIRE_IPV6 to a non-empty value to
+# fail instead of skipping where there is no IPv6 loopback.
 
 set -eu
 
@@ -61,6 +62,18 @@ http {
         location = /anon { return 200 "\$remote_addr_anon\n"; }
         location = /raw  { return 200 "\$remote_addr\n"; }
     }
+
+    # a connection with no address to mask at all
+    server {
+        listen unix:$WORK/u.sock;
+        location = /anon { return 200 "\$remote_addr_anon\n"; }
+        location = /raw  { return 200 "\$remote_addr\n"; }
+    }
+
+    server {
+        listen 127.0.0.1:$((PORT + 2));
+        location / { proxy_pass http://unix:$WORK/u.sock:; }
+    }
 }
 CONF
 
@@ -105,8 +118,20 @@ if curl -s --max-time 5 -o /dev/null "http://[::1]:$DUAL/anon" 2>/dev/null; then
 	[ "$raw" = "::1" ] || note "the unmasked address reads $raw, expected ::1"
 	[ "$anon" = "::" ] || note "::1 masked to /48 must be ::, got $anon"
 else
-	echo "  no IPv6 on this host, skipped"
+	if [ -n "${ADDRESSES_REQUIRE_IPV6:-}" ]; then
+		note "no IPv6 loopback, and this run was told to require one"
+	else
+		echo "  no IPv6 on this host, skipped"
+	fi
 fi
+
+echo "== unix socket, nothing to mask"
+raw=$(probe "http://127.0.0.1:$((PORT + 2))/raw")
+anon=$(probe "http://127.0.0.1:$((PORT + 2))/anon")
+echo "  $raw -> $anon"
+[ "$raw" = "unix:" ] || note "the unmasked value reads $raw, expected unix:"
+[ "$anon" = "$raw" ] ||
+	note "the masked value reads $anon, it has to match \$remote_addr ($raw)"
 
 echo "== error log"
 if grep -qE '\[(alert|emerg)\]' "$WORK/logs/error.log"; then

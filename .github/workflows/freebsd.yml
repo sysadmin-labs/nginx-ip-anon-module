@@ -43,3 +43,8 @@ jobs:
             # the address families are checked here as well: a dual stack
             # listener hands over a different sockaddr on this system
             ci/addresses.sh "$HOME/nginx/sbin/nginx"
+            # www/nginx ships this module as a loadable object, so that is
+            # the build the package is made of and it is built here too
+            ci/build.sh "$NGINX_VERSION" "$HOME/nginx-dyn" dynamic
+            ADDRESSES_LOAD_MODULE=$HOME/nginx-dyn/modules/ngx_http_ip_anon_module.so \
+              ci/addresses.sh "$HOME/nginx-dyn/sbin/nginx"

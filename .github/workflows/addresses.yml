@@ -35,4 +35,5 @@ jobs:
           ci/build.sh "$NGINX_VERSION" "$HOME/nginx"
 
       - name: IPv4, IPv6 and an IPv4 address in an IPv6 sockaddr
-        run: ci/addresses.sh "$HOME/nginx/sbin/nginx"
+        run: ADDRESSES_REQUIRE_IPV6=1 \
+            ci/addresses.sh "$HOME/nginx/sbin/nginx"
