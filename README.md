@@ -34,6 +34,11 @@ What is masked is the address of the connection, so behind a proxy it is the
 proxy unless `ngx_http_realip_module` has replaced it; with `set_real_ip_from`
 and `real_ip_header` in place it is the client.
 
+As an alternative to masking it can emit a one-way pseudonym of the address,
+`$remote_addr_hash`: two clients in the same network stay apart, so a log can
+count unique visitors and `limit_req` can act per client, yet the token does
+not lead back to the address a masked prefix would still reveal a part of.
+
 ## Synopsis
 
 ```nginx
@@ -73,6 +78,30 @@ a connection without an IP address falls back to what
 `$binary_remote_addr` reports: a key that came out empty would silently
 take those connections out of every limit.
 
+### `$remote_addr_hash`
+
+A one-way pseudonym of the client address: HMAC-MD5 of the address under a
+secret, as hex.  The same client yields the same token, a different client a
+different one, and the token does not lead back to the address.  Keyed, the
+value is a pseudonym and not a checksum; HMAC-MD5 is the one keyed hash nginx
+provides without OpenSSL, so the variable works in a build without SSL too.
+
+Without `ip_anon_hash_secret` the variable is absent.  An IPv4-mapped address
+is hashed over its four IPv4 bytes, as the masked form treats it; a connection
+without an IP address, a unix socket for instance, has no token.
+
+```nginx
+http {
+    ip_anon_hash_secret "change me";
+    ip_anon_hash_period 24h;
+
+    log_format pseudonymous '$remote_addr_hash - - [$time_local] "$request" '
+                            '$status $body_bytes_sent';
+
+    limit_req_zone $remote_addr_hash zone=perclient:10m rate=10r/s;
+}
+```
+
 ## Directives
 
 ### `ip_anon_v4_prefix`
@@ -98,6 +127,37 @@ untouched.
 
 A prefix wider than its address family is rejected at configuration time,
 not clamped.
+
+### `ip_anon_hash_secret`
+
+**syntax:** `ip_anon_hash_secret <string>`
+**default:** none
+**context:** `http`, `server`, `location`
+
+The key `$remote_addr_hash` is derived with.  Without it the variable is
+absent, so the pseudonym is opt-in.  Keep the secret to keep the tokens stable
+across reloads and hosts; change it to make every token change.
+
+### `ip_anon_hash_period`
+
+**syntax:** `ip_anon_hash_period <time>`
+**default:** `0`, no rotation
+**context:** `http`, `server`, `location`
+
+When set, the current window number (`now / period`) is mixed into the hash,
+so a client's token is stable within a window and does not carry across
+windows.  `24h` counts a visitor through a day but not from one day to the
+next.
+
+### `ip_anon_hash_length`
+
+**syntax:** `ip_anon_hash_length <1-32>`
+**default:** `16`
+**context:** `http`, `server`, `location`
+
+Number of hex characters emitted, up to the 32 of the full digest.  Fewer
+characters make a shorter log at a higher chance of two addresses sharing a
+token.
 
 ## Building
 

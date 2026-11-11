@@ -20,11 +20,19 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_md5.h>
+
+
+#define NGX_HTTP_IP_ANON_MD5_LEN   16
+#define NGX_HTTP_IP_ANON_HMAC_BLK  64
 
 
 typedef struct {
-    ngx_uint_t  v4_prefix;   /* bits kept of an IPv4 address */
-    ngx_uint_t  v6_prefix;   /* bits kept of an IPv6 address */
+    ngx_uint_t  v4_prefix;    /* bits kept of an IPv4 address */
+    ngx_uint_t  v6_prefix;    /* bits kept of an IPv6 address */
+    ngx_str_t   hash_secret;  /* HMAC key; empty disables the pseudonym */
+    time_t      hash_period;  /* rotation window in seconds; 0 is no rotation */
+    ngx_uint_t  hash_length;  /* hex characters of pseudonym to emit */
 } ngx_http_ip_anon_conf_t;
 
 
@@ -35,6 +43,8 @@ static char *ngx_http_ip_anon_merge_loc_conf(ngx_conf_t *cf, void *parent,
 static ngx_int_t ngx_http_ip_anon_text_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_ip_anon_binary_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_ip_anon_hash_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 
 
@@ -48,6 +58,11 @@ static ngx_conf_num_bounds_t  ngx_http_ip_anon_v4_bounds = {
 
 static ngx_conf_num_bounds_t  ngx_http_ip_anon_v6_bounds = {
     ngx_conf_check_num_bounds, 0, 128
+};
+
+/* a prefix of the MD5 digest; 32 hex characters is the whole of it */
+static ngx_conf_num_bounds_t  ngx_http_ip_anon_hash_len_bounds = {
+    ngx_conf_check_num_bounds, 1, 32
 };
 
 
@@ -66,6 +81,27 @@ static ngx_command_t  ngx_http_ip_anon_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_ip_anon_conf_t, v6_prefix),
       &ngx_http_ip_anon_v6_bounds },
+
+    { ngx_string("ip_anon_hash_secret"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_ip_anon_conf_t, hash_secret),
+      NULL },
+
+    { ngx_string("ip_anon_hash_period"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_sec_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_ip_anon_conf_t, hash_period),
+      NULL },
+
+    { ngx_string("ip_anon_hash_length"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_ip_anon_conf_t, hash_length),
+      &ngx_http_ip_anon_hash_len_bounds },
 
       ngx_null_command
 };
@@ -109,6 +145,9 @@ static ngx_http_variable_t  ngx_http_ip_anon_variables[] = {
 
     { ngx_string("binary_remote_addr_anon"), NULL,
       ngx_http_ip_anon_binary_variable, 0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
+    { ngx_string("remote_addr_hash"), NULL,
+      ngx_http_ip_anon_hash_variable, 0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
 
       ngx_http_null_variable
 };
@@ -311,6 +350,148 @@ ngx_http_ip_anon_binary_variable(ngx_http_request_t *r,
 }
 
 
+/*
+ * HMAC-MD5 (RFC 2104) over nginx' built-in MD5.  MD5 is the one keyed hash
+ * that nginx always provides without OpenSSL, so the pseudonym works in a
+ * build without SSL too; as a keyed hash its collision weakness does not
+ * apply here.  A key longer than the block is replaced by its own digest.
+ */
+static void
+ngx_http_ip_anon_hmac_md5(const u_char *key, size_t keylen,
+    const u_char *msg, size_t msglen, u_char digest[NGX_HTTP_IP_ANON_MD5_LEN])
+{
+    ngx_md5_t  ctx;
+    u_char     k[NGX_HTTP_IP_ANON_HMAC_BLK];
+    u_char     ipad[NGX_HTTP_IP_ANON_HMAC_BLK];
+    u_char     opad[NGX_HTTP_IP_ANON_HMAC_BLK];
+    u_char     inner[NGX_HTTP_IP_ANON_MD5_LEN];
+    size_t     i;
+
+    ngx_memzero(k, sizeof(k));
+
+    if (keylen > NGX_HTTP_IP_ANON_HMAC_BLK) {
+        ngx_md5_init(&ctx);
+        ngx_md5_update(&ctx, key, keylen);
+        ngx_md5_final(k, &ctx);
+
+    } else {
+        ngx_memcpy(k, key, keylen);
+    }
+
+    for (i = 0; i < NGX_HTTP_IP_ANON_HMAC_BLK; i++) {
+        ipad[i] = (u_char) (k[i] ^ 0x36);
+        opad[i] = (u_char) (k[i] ^ 0x5c);
+    }
+
+    ngx_md5_init(&ctx);
+    ngx_md5_update(&ctx, ipad, NGX_HTTP_IP_ANON_HMAC_BLK);
+    ngx_md5_update(&ctx, msg, msglen);
+    ngx_md5_final(inner, &ctx);
+
+    ngx_md5_init(&ctx);
+    ngx_md5_update(&ctx, opad, NGX_HTTP_IP_ANON_HMAC_BLK);
+    ngx_md5_update(&ctx, inner, NGX_HTTP_IP_ANON_MD5_LEN);
+    ngx_md5_final(digest, &ctx);
+}
+
+
+/*
+ * A one-way pseudonym of the client address: HMAC-MD5 of the binary address
+ * under the configured secret, emitted as hex.  Without a secret the variable
+ * is absent (opt-in).  With ip_anon_hash_period the current window number is
+ * mixed in, so the pseudonym is stable inside a window and unlinkable across
+ * windows.  The full address is hashed, not the masked prefix, so the two
+ * modes are independent.
+ */
+static ngx_int_t
+ngx_http_ip_anon_hash_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_ip_anon_conf_t  *acf;
+    u_char                   *addr, *hex;
+    size_t                    len, nbytes, msglen;
+    u_char                    msg[16 + sizeof(uint64_t)];
+    u_char                    digest[NGX_HTTP_IP_ANON_MD5_LEN];
+    struct sockaddr_in       *sin;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6      *sin6;
+#endif
+
+    acf = ngx_http_get_module_loc_conf(r, ngx_http_ip_anon_module);
+
+    if (acf->hash_secret.len == 0 || r->connection->socklen == 0) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    switch (r->connection->sockaddr->sa_family) {
+
+    case AF_INET:
+        sin = (struct sockaddr_in *) r->connection->sockaddr;
+        addr = (u_char *) &sin->sin_addr;
+        len = 4;
+        break;
+
+#if (NGX_HAVE_INET6)
+    case AF_INET6:
+        sin6 = (struct sockaddr_in6 *) r->connection->sockaddr;
+
+        /* v4-mapped: hash the four v4 bytes, as the mask path treats it */
+        if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
+            addr = sin6->sin6_addr.s6_addr + 12;
+            len = 4;
+
+        } else {
+            addr = sin6->sin6_addr.s6_addr;
+            len = 16;
+        }
+        break;
+#endif
+
+    default:
+        /* unix sockets and anything without an address: no pseudonym */
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    ngx_memcpy(msg, addr, len);
+    msglen = len;
+
+    if (acf->hash_period > 0) {
+        uint64_t    bucket = (uint64_t) ngx_time() / (uint64_t) acf->hash_period;
+        ngx_uint_t  i;
+
+        /* big-endian, so the pseudonym does not depend on the host byte order */
+        for (i = 0; i < sizeof(uint64_t); i++) {
+            msg[msglen + sizeof(uint64_t) - 1 - i] = (u_char) (bucket & 0xff);
+            bucket >>= 8;
+        }
+
+        msglen += sizeof(uint64_t);
+    }
+
+    ngx_http_ip_anon_hmac_md5(acf->hash_secret.data, acf->hash_secret.len,
+                              msg, msglen, digest);
+
+    nbytes = (acf->hash_length + 1) / 2;   /* digest bytes rendered as hex */
+
+    hex = ngx_pnalloc(r->pool, nbytes * 2);
+    if (hex == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_hex_dump(hex, digest, nbytes);
+
+    v->len = acf->hash_length;             /* an odd length drops the last nibble */
+    v->data = hex;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+
 static ngx_int_t
 ngx_http_ip_anon_add_variables(ngx_conf_t *cf)
 {
@@ -342,6 +523,9 @@ ngx_http_ip_anon_create_loc_conf(ngx_conf_t *cf)
 
     acf->v4_prefix = NGX_CONF_UNSET_UINT;
     acf->v6_prefix = NGX_CONF_UNSET_UINT;
+    acf->hash_period = NGX_CONF_UNSET;
+    acf->hash_length = NGX_CONF_UNSET_UINT;
+    /* hash_secret stays {0, NULL} from pcalloc: the pseudonym is off */
 
     return acf;
 }
@@ -356,6 +540,10 @@ ngx_http_ip_anon_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     /* the widths data protection authorities and analytics tools use */
     ngx_conf_merge_uint_value(conf->v4_prefix, prev->v4_prefix, 24);
     ngx_conf_merge_uint_value(conf->v6_prefix, prev->v6_prefix, 48);
+
+    ngx_conf_merge_str_value(conf->hash_secret, prev->hash_secret, "");
+    ngx_conf_merge_sec_value(conf->hash_period, prev->hash_period, 0);
+    ngx_conf_merge_uint_value(conf->hash_length, prev->hash_length, 16);
 
     return NGX_CONF_OK;
 }
